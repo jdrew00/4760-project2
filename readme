@@ -1,0 +1,14 @@
+Jacob Drew
+CS 4760
+Project two
+
+Version Control: https://github.com/jdrew00/cs4760-project1
+
+Description: Program demonstrates IPC through shared memory and bakery algorithm
+
+How to run program:
+./master  [-t ss n] [-h]
+
+ss the maximum time in seconds (default 100 seconds) after which the process should terminate itself if not completed
+n number of slave processes to execute
+If n is over 20 it will be set to 20 for safety
