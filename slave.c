@@ -26,18 +26,41 @@ struct shmseg
     char buf[BUF_SIZE];
 };
 
-int main()
+int main(int argc, char *argv[])
 {
 
+    FILE *outputFile;
+    char* logName = "logfile.txt";
+    outputFile = freopen(logName, "w+", stdout);
+    //define memory segment and pointer to message struct
     int shmid;
-    //struct shmseg *shmp;
-    shmid = shmget(SHM_KEY, sizeof(struct shmseg), 0644 | IPC_CREAT);
-    if (shmid == -1)
+    struct shmseg *shmp;
+    shmid = shmget(SHM_KEY, 1024, 0777 | IPC_CREAT);
+    if (shmid == -1)    //if creating shared memory is unsuccessful throw error
     {
         perror("Shared memory");
         return 1;
     }
 
+    // Attach to the segment to get a pointer to it.
+    shmp = shmat(shmid, NULL, 0);
+    if (shmp == (void *)-1)
+    {
+        perror("Shared memory attach");
+        return 1;
+    }
+
+
+    //detatch the shared memory
+    printf("Reading Process: Reading Done, Detaching Shared Memory\n");
+    if (shmdt(shmp) == -1)
+    {
+        perror("shmdt");
+        return 1;
+    }
+
+    
     printf("hello");
+    fclose(outputFile);
     return 0;
 }
