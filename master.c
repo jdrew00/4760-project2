@@ -5,8 +5,8 @@ Master.c
 
 External resources:
 https://www.geeksforgeeks.org/difference-fork-exec/
-
-
+https://stackoverflow.com/questions/42295035/implementation-of-bakery-algorithm-in-c-for-forked-processes
+https://www.tutorialspoint.com/inter_process_communication/inter_process_communication_shared_memory.htm
 */
 
 #include <stdio.h>
@@ -31,12 +31,98 @@ struct shmseg
     char buf[BUF_SIZE];
 };
 
+pid_t *children;
+int n;
+int shmid;
+struct shmseg *shmp;
+
+void handle_sigalrm(int signum, siginfo_t *info, void *ptr)
+{
+    // prevents multiple interrupts
+    signal(SIGINT, SIG_IGN);
+
+    fprintf(stderr, "Master ran out of time\n");
+
+    // detaching and deleting shared memory
+    shmdt(shmp);
+    shmctl(shmid, IPC_RMID, NULL);
+
+    // creating tmp_children to replace children
+    // this way children can be freed before SIGTERM
+    pid_t tmp_children[n];
+    int i;
+    for (i = 0; i < n; i++)
+    {
+        tmp_children[i] = children[i];
+    }
+
+    // freeing allocated memory
+    free(children);
+
+    // terminate child processes
+    for (i = 0; i < n; i++)
+    {
+        kill(tmp_children[i], SIGTERM);
+    }
+}
+
+void handle_sigint(int signum, siginfo_t *info, void *ptr)
+{
+    // prevents multiple interrupts
+    signal(SIGINT, SIG_IGN);
+    signal(SIGALRM, SIG_IGN);
+
+    fprintf(stderr, " interrupt was caught by master\n");
+
+    // detaching and deleting shared memory
+    shmdt(shmp);
+    shmctl(shmid, IPC_RMID, NULL);
+
+    // creating tmp_children to replace children
+    // this way children can be freed before SIGTERM
+    pid_t tmp_children[n];
+    int i;
+    for (i = 0; i < n; i++)
+    {
+        tmp_children[i] = children[i];
+    }
+
+    // freeing allocated memory
+    free(children);
+
+    // terminate child processes
+    for (i = 0; i < n; i++)
+    {
+        kill(tmp_children[i], SIGTERM);
+    }
+}
+
+void catch_sigalrm()
+{
+    static struct sigaction _sigact;
+    memset(&_sigact, 0, sizeof(_sigact));
+    _sigact.sa_sigaction = handle_sigalrm;
+    _sigact.sa_flags = SA_SIGINFO;
+    sigaction(SIGALRM, &_sigact, NULL);
+}
+
+void catch_sigint()
+{
+    static struct sigaction _sigact;
+    memset(&_sigact, 0, sizeof(_sigact));
+    _sigact.sa_sigaction = handle_sigint;
+    _sigact.sa_flags = SA_SIGINFO;
+    sigaction(SIGINT, &_sigact, NULL);
+}
+
+
 int main(int argc, char *argv[])
 {
     // declare variables
     int opt;
     int ss;
-    int n;
+
+    ss = 100;
 
     // getopt
     // process command line args
@@ -61,15 +147,11 @@ int main(int argc, char *argv[])
             ss = atoi(optarg);
             n = atoi(argv[3]);
             printf("SS: %d\n", ss);
-            if (n > 20)
+            if (n > 18)
             {
-                n = 20;
+                n = 18;
                 printf("Number of processes set to 20 for safety\n");
-                //printf("N: %d\n", n);
-            }
-            else
-            {
-                //printf("N: %d\n", n);
+                // printf("N: %d\n", n);
             }
             break;
         case ':':
@@ -83,11 +165,6 @@ int main(int argc, char *argv[])
 
     // setup shared memory:
     // from geeks for geeks:
-
-    int shmid;
-    struct shmseg *shmp;
-    // char *bufptr;
-
     // shmget returns an identifier in shmid
     // 1024 as size
     // 0777 so anyone can read write execute this memory, also 777 is an abnormal permision so it makes it easy to see that it is detatched when we run 'ipcs'
@@ -105,45 +182,63 @@ int main(int argc, char *argv[])
         perror("Shared memory attach");
         return 1;
     }
-    char *bufptr;
-    bufptr = shmp->buf;
-    bufptr = "Hello";
-    printf("Parent attacthed the shared meory: reads: %s\n", bufptr);
 
-    // fork and exec one process
-    pid_t pid = fork();
-    if (pid == -1)
+    // catch sigs
+    catch_sigint();
+    catch_sigalrm();
+    alarm(ss); // ss from command args
+
+    // initializing pids
+    if ((children = (pid_t *)(malloc(n * sizeof(pid_t)))) == NULL)
     {
-        // pid == -1 means error occured
-        printf("can't fork, error occured\n");
-        exit(EXIT_FAILURE);
+        errno = ENOMEM;
+        perror("children malloc");
+        exit(1);
     }
-    else if (pid == 0)
+    pid_t pid;
+    int i;
+    for (i = 0; i < n; i++)
     {
-        // Here It will return process id of child process
-        printf("child process, pid = %u\n", getpid());
-        // Here It will return Parent of child Process means Parent process it self
-        printf("parent of child process, pid = %u\n", getppid());
-
-        // have the child attatch to shared memory
-        shmp = shmat(shmid, (void *)0, 0);
-        if (shmp == (void *)-1)
+        // fork and exec one process
+        pid = fork();
+        if (pid == -1)
         {
-            perror("Shared memory attach");
-            return 1;
+            // pid == -1 means error occured
+            printf("can't fork, error occured\n");
+            perror("fork failed");
+            exit(EXIT_FAILURE);
+        }
+        else if (pid == 0)
+        {
+
+            // have the child attatch to shared memory
+            shmp = shmat(shmid, (void *)0, 0);
+            if (shmp == (void *)-1)
+            {
+                perror("Shared memory attach");
+                return 1;
+            }
+
+            char *childNum = malloc(6);
+            sprintf(childNum, "%d", i);
+
+            children[i] = pid;
+            char *args[] = {"./slave", (char *)childNum, "8", (char *)0};
+            execvp("./slave", args);
+            perror("execvp");
+            exit(0);
         }
 
-        // print shared memory address:
-        printf("child  set 1, reads: %s\n", bufptr);
-
-        bufptr = "child's input";
-
-        // char* args[] = {"./slave", "1", NULL};
-        // execvp("./slave", args);
-        // perror("execvp");
     }
 
-    printf("parent:  set 1, reads: %s\n", bufptr);
+    // waiting for all child processes to finish
+    for (i = 0; i < n; i++)
+    {
+        int status;
+        waitpid(children[i], &status, 0);
+    }
+
+    free(children);
 
     // detatch shared memory
     if (shmdt(shmp) == -1)
@@ -153,11 +248,11 @@ int main(int argc, char *argv[])
     }
 
     // destroy the shared memory
-    if (shmctl(shmid, IPC_RMID, 0) == -1)
-    {
-        perror("shmctl");
-        return 1;
-    }
+    // if (shmctl(shmid, IPC_RMID, NULL) == -1)
+    // {
+    //     perror("shmctl");
+    //     return 1;
+    // }
 
     return 0;
 }
